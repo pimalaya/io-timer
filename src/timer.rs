@@ -55,21 +55,21 @@ pub struct TimerCycle {
     /// The name of the timer cycle.
     pub name: String,
 
-    /// The duration of the timer cycle, in millis.
+    /// The duration of the timer cycle, in seconds.
     ///
     /// This field has two meanings, depending on where it is
     /// used. *From the config point of view*, the duration represents
     /// the total duration of the cycle. *From the timer point of
     /// view*, the duration represents the amount of time remaining
     /// before the cycle ends.
-    pub duration: u128,
+    pub duration: usize,
 }
 
 impl TimerCycle {
-    pub fn new(name: impl ToString, duration_secs: usize) -> Self {
+    pub fn new(name: impl ToString, duration: usize) -> Self {
         Self {
             name: name.to_string(),
-            duration: (duration_secs * 1000) as u128,
+            duration,
         }
     }
 }
@@ -196,7 +196,7 @@ pub struct Timer {
     #[serde(skip)]
     pub started_at: Option<Instant>,
 
-    pub elapsed: u128,
+    pub elapsed: usize,
 }
 
 impl Timer {
@@ -212,9 +212,9 @@ impl Timer {
         }
     }
 
-    pub fn elapsed(&self) -> u128 {
+    pub fn elapsed(&self) -> usize {
         self.started_at
-            .map(|i| i.elapsed().as_millis())
+            .map(|i| i.elapsed().as_secs() as usize)
             .unwrap_or_default()
             + self.elapsed
     }
@@ -236,7 +236,7 @@ impl Timer {
             );
 
             if let TimerLoop::Fixed(cycles_count) = self.cycles_count {
-                if elapsed >= (total_duration * cycles_count as u128) {
+                if elapsed >= total_duration * cycles_count {
                     self.state = TimerState::Stopped;
                     return events;
                 }
@@ -288,7 +288,7 @@ impl Timer {
     }
 
     pub fn set(&mut self, duration_secs: usize) -> impl IntoIterator<Item = TimerEvent> {
-        self.cycle.duration = (duration_secs * 1000) as u128;
+        self.cycle.duration = duration_secs;
         Some(TimerEvent::Set(self.cycle.clone()))
     }
 
