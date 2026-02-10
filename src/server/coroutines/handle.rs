@@ -1,18 +1,47 @@
 use std::mem;
 
 use io_stream::{
-    coroutines::{Read, Write},
-    Io,
+    coroutines::{
+        read::{ReadStream, ReadStreamError, ReadStreamResult},
+        write::{WriteStream, WriteStreamError, WriteStreamResult},
+    },
+    io::StreamIo,
 };
 use log::{debug, trace};
 use memchr::memrchr;
+use thiserror::Error;
 
 use crate::{timer::TimerEvent, Request, Response, Timer};
 
 #[derive(Debug)]
 pub enum State {
-    ReceiveRequest(Read),
-    SendResponse(Write),
+    ReceiveRequest(ReadStream),
+    SendResponse(WriteStream),
+}
+
+/// Output emitted after a coroutine finishes its progression.
+#[derive(Clone, Debug)]
+pub enum HandleRequestResult {
+    /// The coroutine has successfully terminated its progression.
+    Ok(Vec<TimerEvent>),
+
+    /// A stream I/O needs to be performed to make the coroutine
+    /// progress.
+    Io(StreamIo),
+
+    /// An error occured during the coroutine progression.
+    Err(HandleRequestError),
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum HandleRequestError {
+    #[error("Received unexpected EOF")]
+    Eof,
+
+    #[error(transparent)]
+    ReadStream(#[from] ReadStreamError),
+    #[error(transparent)]
+    WriteStream(#[from] WriteStreamError),
 }
 
 #[derive(Debug)]
@@ -25,7 +54,7 @@ pub struct HandleRequest {
 impl HandleRequest {
     pub fn new() -> Self {
         Self {
-            state: State::ReceiveRequest(Read::default()),
+            state: State::ReceiveRequest(ReadStream::default()),
             request: Vec::new(),
             events: Vec::with_capacity(2),
         }
@@ -34,16 +63,22 @@ impl HandleRequest {
     pub fn resume(
         &mut self,
         timer: &mut Timer,
-        mut input: Option<Io>,
-    ) -> Result<impl IntoIterator<Item = TimerEvent>, Io> {
+        mut input: Option<StreamIo>,
+    ) -> HandleRequestResult {
         loop {
             match &mut self.state {
                 State::ReceiveRequest(read) => {
                     let output = match read.resume(input.take()) {
-                        Ok(output) => output,
-                        Err(io) => {
+                        ReadStreamResult::Ok(output) => output,
+                        ReadStreamResult::Eof => {
+                            return HandleRequestResult::Err(HandleRequestError::Eof)
+                        }
+                        ReadStreamResult::Err(err) => {
+                            return HandleRequestResult::Err(err.into());
+                        }
+                        ReadStreamResult::Io(io) => {
                             debug!("need to receive request chunk");
-                            return Err(io);
+                            return HandleRequestResult::Io(io);
                         }
                     };
 
@@ -89,19 +124,28 @@ impl HandleRequest {
 
                     debug!("successfully process request: {response:?}");
 
-                    let coroutine = Write::new(response.to_vec());
+                    let coroutine = WriteStream::new(response.to_vec());
                     self.state = State::SendResponse(coroutine);
                 }
                 State::SendResponse(write) => {
-                    if let Err(io) = write.resume(input.take()) {
-                        debug!("need to send response");
-                        return Err(io);
-                    }
+                    match write.resume(input.take()) {
+                        WriteStreamResult::Ok(_) => (),
+                        WriteStreamResult::Eof => {
+                            return HandleRequestResult::Err(HandleRequestError::Eof)
+                        }
+                        WriteStreamResult::Err(err) => {
+                            return HandleRequestResult::Err(err.into());
+                        }
+                        WriteStreamResult::Io(io) => {
+                            debug!("need to send response");
+                            return HandleRequestResult::Io(io);
+                        }
+                    };
 
                     let events = mem::take(&mut self.events);
                     debug!("generated {} events to be processed", events.len());
                     trace!("{events:#?}");
-                    break Ok(events);
+                    break HandleRequestResult::Ok(events);
                 }
             }
         }

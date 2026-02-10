@@ -1,8 +1,8 @@
-use io_stream::Io;
+use io_stream::io::StreamIo;
 
-use crate::{Request, Response};
+use crate::{client::coroutines::send::SendRequestResult, Request};
 
-use super::SendRequest;
+use super::send::SendRequest;
 
 #[derive(Debug)]
 pub struct StartTimer {
@@ -15,7 +15,7 @@ impl StartTimer {
         Self { send }
     }
 
-    pub fn resume(&mut self, input: Option<Io>) -> Result<Response, Io> {
-        self.send.resume(input)
+    pub fn resume(&mut self, arg: Option<StreamIo>) -> SendRequestResult {
+        self.send.resume(arg)
     }
 }

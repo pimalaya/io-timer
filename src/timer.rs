@@ -6,7 +6,7 @@
 //! timer, timer events are triggered.
 
 #[cfg(test)]
-use mock_instant::Instant;
+use mock_instant::global::Instant;
 #[cfg(not(test))]
 use std::time::Instant;
 use std::{
@@ -55,21 +55,21 @@ pub struct TimerCycle {
     /// The name of the timer cycle.
     pub name: String,
 
-    /// The duration of the timer cycle.
+    /// The duration of the timer cycle, in millis.
     ///
     /// This field has two meanings, depending on where it is
     /// used. *From the config point of view*, the duration represents
     /// the total duration of the cycle. *From the timer point of
     /// view*, the duration represents the amount of time remaining
     /// before the cycle ends.
-    pub duration: usize,
+    pub duration: u128,
 }
 
 impl TimerCycle {
-    pub fn new(name: impl ToString, duration: usize) -> Self {
+    pub fn new(name: impl ToString, duration_secs: usize) -> Self {
         Self {
             name: name.to_string(),
-            duration,
+            duration: (duration_secs * 1000) as u128,
         }
     }
 }
@@ -196,7 +196,7 @@ pub struct Timer {
     #[serde(skip)]
     pub started_at: Option<Instant>,
 
-    pub elapsed: usize,
+    pub elapsed: u128,
 }
 
 impl Timer {
@@ -212,9 +212,9 @@ impl Timer {
         }
     }
 
-    pub fn elapsed(&self) -> usize {
+    pub fn elapsed(&self) -> u128 {
         self.started_at
-            .map(|i| i.elapsed().as_secs() as usize)
+            .map(|i| i.elapsed().as_millis())
             .unwrap_or_default()
             + self.elapsed
     }
@@ -236,7 +236,7 @@ impl Timer {
             );
 
             if let TimerLoop::Fixed(cycles_count) = self.cycles_count {
-                if elapsed >= (total_duration * cycles_count) {
+                if elapsed >= (total_duration * cycles_count as u128) {
                     self.state = TimerState::Stopped;
                     return events;
                 }
@@ -287,8 +287,8 @@ impl Timer {
         events
     }
 
-    pub fn set(&mut self, duration: usize) -> impl IntoIterator<Item = TimerEvent> {
-        self.cycle.duration = duration;
+    pub fn set(&mut self, duration_secs: usize) -> impl IntoIterator<Item = TimerEvent> {
+        self.cycle.duration = (duration_secs * 1000) as u128;
         Some(TimerEvent::Set(self.cycle.clone()))
     }
 
@@ -342,7 +342,7 @@ impl PartialEq for Timer {
 mod tests {
     use std::time::Duration;
 
-    use mock_instant::{Instant, MockClock};
+    use mock_instant::global::{Instant, MockClock};
 
     use super::*;
 

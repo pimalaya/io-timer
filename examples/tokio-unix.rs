@@ -5,8 +5,8 @@ use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use io_stream::runtimes::tokio::handle;
 use io_timer::{
-    client::coroutines::{GetTimer, StartTimer},
-    server::coroutines::HandleRequest,
+    client::coroutines::{get::GetTimer, send::SendRequestResult, start::StartTimer},
+    server::coroutines::handle::{HandleRequest, HandleRequestResult},
     timer::{TimerConfig, TimerCycles, TimerEvent, TimerLoop},
     Timer,
 };
@@ -25,7 +25,9 @@ use tokio::{
 #[tokio::main]
 async fn main() {
     if let Err(_) = env::var("RUST_LOG") {
-        env::set_var("RUST_LOG", "debug");
+        unsafe {
+            env::set_var("RUST_LOG", "debug");
+        }
     }
 
     env_logger::init();
@@ -58,8 +60,12 @@ async fn main() {
     let mut arg = None;
     let mut start = StartTimer::new();
 
-    while let Err(io) = start.resume(arg.take()) {
-        arg = Some(handle(&mut stream, io).await.unwrap());
+    loop {
+        match start.resume(arg.take()) {
+            SendRequestResult::Ok(_) => break,
+            SendRequestResult::Io(io) => arg = Some(handle(&mut stream, io).await.unwrap()),
+            SendRequestResult::Err(err) => panic!("{err}"),
+        }
     }
 
     sleep(Duration::from_secs(3)).await;
@@ -69,8 +75,9 @@ async fn main() {
 
     let timer = loop {
         match get.resume(arg.take()) {
-            Ok(timer) => break timer,
-            Err(io) => arg = Some(handle(&mut stream, io).await.unwrap()),
+            SendRequestResult::Ok(timer) => break timer,
+            SendRequestResult::Io(io) => arg = Some(handle(&mut stream, io).await.unwrap()),
+            SendRequestResult::Err(err) => panic!("{err}"),
         }
     };
 
@@ -122,8 +129,11 @@ fn spawn_server(timer: Arc<Mutex<Timer>>, mpsc: UnboundedSender<TimerEvent>, soc
                 drop(timer);
 
                 match res {
-                    Ok(events) => break events,
-                    Err(io) => arg = Some(handle(&mut stream, io).await.unwrap()),
+                    HandleRequestResult::Ok(events) => break events,
+                    HandleRequestResult::Io(io) => {
+                        arg = Some(handle(&mut stream, io).await.unwrap())
+                    }
+                    HandleRequestResult::Err(err) => panic!("{err}"),
                 }
             };
 

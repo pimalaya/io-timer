@@ -1,7 +1,7 @@
 [package]
 name = "io-timer"
 description = "Set of I/O-free coroutines to manage timers"
-version = "1.0.0"
+version = "0.0.1"
 authors = ["soywod <clement.douin@posteo.net>"]
 edition = "2021"
 license = "MIT"
@@ -16,23 +16,21 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
+default = ["client", "server"]
 client = []
 server = []
 
 [dev-dependencies]
 env_logger = "0.11"
-io-stream = { version = "1", default-features = false, features = ["std", "tokio"] }
-mock_instant = "0.3"
+io-stream = { version = "0.0.2", default-features = false, features = ["std", "tokio"] }
+mock_instant = "0.6"
 tempdir = "0.3"
 tokio = { version = "1", features = ["full"] }
 
 [dependencies]
-io-stream = { version = "1", default-features = false }
+io-stream = { version = "0.0.2", default-features = false }
 log = "0.4"
 memchr = "2.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[patch.crates-io]
-io-stream.git = "https://github.com/pimalaya/io-stream"
+thiserror = "2"
