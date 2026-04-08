@@ -1,15 +1,16 @@
 [package]
-name = "io-timer"
-description = "Set of I/O-free coroutines to manage timers"
-version = "0.0.1"
+name = "io-time"
+description = "I/O-free time library"
+version = "0.0.2"
 authors = ["soywod <clement.douin@posteo.net>"]
-edition = "2021"
-license = "MIT"
-categories = ["api-bindings"]
-keywords = ["io-free", "coroutine", "timer", "stream", "pomodoro"]
+rust-version = "1.87"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+categories = ["api-bindings", "date-and-time", "no-std"]
+keywords = ["io-free", "coroutine", "time", "timer"]
 homepage = "https://pimalaya.org"
-documentation = "https://docs.rs/io-timer/latest/io_timer"
-repository = "https://github.com/pimalaya/io-timer"
+documentation = "https://docs.rs/io-time/latest/io_time"
+repository = "https://github.com/pimalaya/io-time"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -17,20 +18,18 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-client = []
-server = []
+std = []
+timer = ["dep:io-socket", "dep:serde_json"]
 
 [dev-dependencies]
-env_logger = "0.11"
-io-stream = { version = "0.0.2", default-features = false, features = ["std", "tokio"] }
-mock_instant = "0.6"
-tempdir = "0.3"
-tokio = { version = "1", features = ["full"] }
+io-socket = { version = "0.0.1", default-features = false }
 
 [dependencies]
-io-stream = { version = "0.0.2", default-features = false }
-log = "0.4"
-memchr = "2.7"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
+io-socket = { version = "0.0.1", default-features = false, optional = true }
+log = { version = "0.4", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"], optional = true }
+thiserror = { version = "2", default-features = false }
+
+[patch.crates-io]
+io-socket.git = "https://github.com/pimalaya/io-socket"

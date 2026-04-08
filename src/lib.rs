@@ -1,13 +1,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![doc = include_str!("../README.md")]
+#![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "client")]
-pub mod client;
-mod request;
-mod response;
-#[cfg(feature = "server")]
-pub mod server;
+extern crate alloc;
+
+pub mod coroutines;
+pub mod io;
+pub mod runtimes;
+#[cfg(feature = "timer")]
 pub mod timer;
-
-#[doc(inline)]
-pub use self::{request::Request, response::Response, timer::Timer};

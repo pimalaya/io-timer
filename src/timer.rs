@@ -1,37 +1,29 @@
-//! # Timer
+//! Pure timer state machine.
 //!
-//! This module contains everything related to the timer. A timer can
-//! be identified by a state (running or stopped), a cycle and a
-//! cycles count (infinite or finite). During the lifetime of the
-//! timer, timer events are triggered.
+//! The [`Timer`] struct is I/O-free: it never reads the clock itself.
+//! Methods that need the current time accept `now: u64` (Unix epoch
+//! seconds) as a parameter, which the caller obtains via the
+//! [`TimeNow`] coroutine or directly from a runtime.
+//!
+//! [`TimeNow`]: crate::coroutines::now::TimeNow
 
-#[cfg(test)]
-use mock_instant::global::Instant;
-#[cfg(not(test))]
-use std::time::Instant;
-use std::{
-    io::{Error, ErrorKind, Result},
-    ops::{Deref, DerefMut},
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
 };
+use core::ops::{Deref, DerefMut};
 
 use serde::{Deserialize, Serialize};
 
-/// The timer loop.
-///
-/// When the timer reaches its last cycle, it starts again from the
-/// first cycle. This structure defines the number of loops the timer
-/// should do before stopping by itself.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// Controls how many full loops the timer runs before stopping.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TimerLoop {
-    /// The timer loops indefinitely and therefore never stops by
-    /// itself.
+    /// The timer loops indefinitely and never stops by itself.
     ///
-    /// The only way to stop such timer is via a stop request.
+    /// The only way to stop such a timer is via [`Timer::stop`].
     #[default]
     Infinite,
-
-    /// The timer stops by itself after the given number of loops.
+    /// The timer stops automatically after the given number of loops.
     Fixed(usize),
 }
 
@@ -45,27 +37,22 @@ impl From<usize> for TimerLoop {
     }
 }
 
-/// The timer cycle.
-///
-/// A cycle is a step in the timer lifetime, represented by a name and
-/// a duration.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// A single step in the timer lifecycle, identified by a name and a
+/// duration in seconds.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TimerCycle {
-    /// The name of the timer cycle.
+    /// The name of this cycle.
     pub name: String,
-
-    /// The duration of the timer cycle, in seconds.
+    /// Remaining seconds in this cycle.
     ///
-    /// This field has two meanings, depending on where it is
-    /// used. *From the config point of view*, the duration represents
-    /// the total duration of the cycle. *From the timer point of
-    /// view*, the duration represents the amount of time remaining
-    /// before the cycle ends.
+    /// From the *configuration* perspective this is the total cycle
+    /// duration; from the *running timer* perspective it is the time
+    /// remaining before the cycle ends.
     pub duration: usize,
 }
 
 impl TimerCycle {
+    /// Creates a new cycle with the given name and duration.
     pub fn new(name: impl ToString, duration: usize) -> Self {
         Self {
             name: name.to_string(),
@@ -74,15 +61,9 @@ impl TimerCycle {
     }
 }
 
-impl<T: ToString> From<(T, usize)> for TimerCycle {
-    fn from((name, duration): (T, usize)) -> Self {
-        Self::new(name, duration)
-    }
-}
-
-/// The timer cycles list.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// The ordered list of cycles that a timer runs through.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct TimerCycles(Vec<TimerCycle>);
 
 impl<T: IntoIterator<Item = TimerCycle>> From<T> for TimerCycles {
@@ -105,105 +86,93 @@ impl DerefMut for TimerCycles {
     }
 }
 
-/// The timer state.
-///
-/// Enumeration of all the possible state of a timer: running, paused
-/// or stopped.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// The current state of a timer.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TimerState {
     /// The timer is running.
     Running,
-
     /// The timer has been paused.
     Paused,
-
     /// The timer is not running.
     #[default]
     Stopped,
 }
 
-/// The timer event.
-///
-/// Enumeration of all possible events that can be triggered during
-/// the timer lifecycle.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// An event emitted by a timer during its lifecycle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TimerEvent {
     /// The timer started.
     Started,
-
     /// The timer began the given cycle.
     Began(TimerCycle),
-
-    /// The timer is running the given cycle (tick).
+    /// The timer is running the given cycle (periodic tick).
     Running(TimerCycle),
-
-    /// The timer has been set to the given cycle.
+    /// The remaining duration was manually set.
     Set(TimerCycle),
-
-    /// The timer has been paused at the given cycle.
+    /// The timer was paused at the given cycle.
     Paused(TimerCycle),
-
-    /// The timer has been resumed at the given cycle.
+    /// The timer was resumed at the given cycle.
     Resumed(TimerCycle),
-
-    /// The timer ended with the given cycle.
+    /// The timer ended the given cycle.
     Ended(TimerCycle),
-
     /// The timer stopped.
     Stopped,
 }
 
-/// The timer configuration.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// Timer configuration: cycle definitions and loop count.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TimerConfig {
-    /// The list of custom timer cycles.
+    /// The ordered list of timer cycles.
     pub cycles: TimerCycles,
-
-    /// The timer cycles counter.
+    /// How many full loops the timer should run.
     pub cycles_count: TimerLoop,
 }
 
 impl TimerConfig {
-    fn clone_first_cycle(&self) -> Result<TimerCycle> {
-        self.cycles.first().cloned().ok_or_else(|| {
-            Error::new(
-                ErrorKind::NotFound,
-                "cannot find first cycle from timer config",
-            )
-        })
+    fn first_cycle(&self) -> TimerCycle {
+        self.cycles
+            .first()
+            .cloned()
+            .expect("timer config must have at least one cycle")
     }
 }
 
-/// The main timer struct.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// An I/O-free timer state machine.
+///
+/// All methods that depend on the current time accept `now: u64`
+/// (seconds since the Unix epoch) rather than reading the clock
+/// internally. Obtain `now` via the [`TimeNow`] coroutine or via the
+/// server-side [`TimerRequestHandle`] coroutine.
+///
+/// [`TimeNow`]: crate::coroutines::now::TimeNow
+/// [`TimerRequestHandle`]: crate::coroutines::server::TimerRequestHandle
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Timer {
-    /// The current timer configuration.
+    /// The timer configuration.
     pub config: TimerConfig,
-
     /// The current timer state.
     pub state: TimerState,
-
-    /// The current timer cycle.
+    /// The current cycle (with remaining duration).
     pub cycle: TimerCycle,
-
-    /// The current cycles counter.
+    /// The configured loop count, decremented as loops complete.
     pub cycles_count: TimerLoop,
-
-    #[serde(skip)]
-    pub started_at: Option<Instant>,
-
+    /// Unix epoch seconds at which the timer was last started or
+    /// resumed. `None` when the timer is stopped or paused.
+    pub started_at: Option<u64>,
+    /// Accumulated elapsed seconds from previous runs (before the
+    /// last pause or stop).
     pub elapsed: usize,
 }
 
 impl Timer {
+    /// Creates a new timer from the given configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config` has no cycles.
     pub fn new(config: TimerConfig) -> Self {
-        let cycle = config.clone_first_cycle().unwrap();
+        let cycle = config.first_cycle();
         let cycles_count = config.cycles_count.clone();
-
         Self {
             config,
             cycle,
@@ -212,18 +181,25 @@ impl Timer {
         }
     }
 
-    pub fn elapsed(&self) -> usize {
-        self.started_at
-            .map(|i| i.elapsed().as_secs() as usize)
-            .unwrap_or_default()
-            + self.elapsed
+    /// Returns the total elapsed seconds since the timer last started
+    /// or resumed, plus any previously accumulated elapsed time.
+    pub fn elapsed(&self, now: u64) -> usize {
+        let running = self
+            .started_at
+            .map(|s| now.saturating_sub(s) as usize)
+            .unwrap_or(0);
+        running + self.elapsed
     }
 
-    pub fn update(&mut self) -> impl IntoIterator<Item = TimerEvent> {
+    /// Advances the timer by one tick and returns any events that
+    /// fired.
+    ///
+    /// Has no effect when the timer is paused or stopped.
+    pub fn update(&mut self, now: u64) -> impl IntoIterator<Item = TimerEvent> {
         let mut events = Vec::with_capacity(3);
 
         if let TimerState::Running = self.state {
-            let mut elapsed = self.elapsed();
+            let mut elapsed = self.elapsed(now);
 
             let (cycles, total_duration) = self.config.cycles.iter().cloned().fold(
                 (Vec::new(), 0),
@@ -271,14 +247,17 @@ impl Timer {
         events
     }
 
-    pub fn start(&mut self) -> impl IntoIterator<Item = TimerEvent> {
+    /// Starts the timer from the first configured cycle.
+    ///
+    /// Has no effect if the timer is already running or paused.
+    pub fn start(&mut self, now: u64) -> impl IntoIterator<Item = TimerEvent> {
         let mut events = Vec::with_capacity(2);
 
         if matches!(self.state, TimerState::Stopped) {
             self.state = TimerState::Running;
-            self.cycle = self.config.clone_first_cycle().unwrap();
+            self.cycle = self.config.first_cycle();
             self.cycles_count = self.config.cycles_count.clone();
-            self.started_at = Some(Instant::now());
+            self.started_at = Some(now);
             self.elapsed = 0;
             events.push(TimerEvent::Started);
             events.push(TimerEvent::Began(self.cycle.clone()));
@@ -287,32 +266,43 @@ impl Timer {
         events
     }
 
+    /// Sets the remaining duration of the current cycle to
+    /// `duration_secs`.
     pub fn set(&mut self, duration_secs: usize) -> impl IntoIterator<Item = TimerEvent> {
         self.cycle.duration = duration_secs;
-        Some(TimerEvent::Set(self.cycle.clone()))
+        [TimerEvent::Set(self.cycle.clone())]
     }
 
-    pub fn pause(&mut self) -> impl IntoIterator<Item = TimerEvent> {
+    /// Pauses the timer, saving the elapsed time.
+    ///
+    /// Has no effect if the timer is not running.
+    pub fn pause(&mut self, now: u64) -> impl IntoIterator<Item = TimerEvent> {
         if matches!(self.state, TimerState::Running) {
-            self.state = TimerState::Paused;
-            self.elapsed = self.elapsed();
+            self.elapsed = self.elapsed(now);
             self.started_at = None;
+            self.state = TimerState::Paused;
             Some(TimerEvent::Paused(self.cycle.clone()))
         } else {
             None
         }
     }
 
-    pub fn resume(&mut self) -> impl IntoIterator<Item = TimerEvent> {
+    /// Resumes the timer from where it was paused.
+    ///
+    /// Has no effect if the timer is not paused.
+    pub fn resume(&mut self, now: u64) -> impl IntoIterator<Item = TimerEvent> {
         if matches!(self.state, TimerState::Paused) {
             self.state = TimerState::Running;
-            self.started_at = Some(Instant::now());
+            self.started_at = Some(now);
             Some(TimerEvent::Resumed(self.cycle.clone()))
         } else {
             None
         }
     }
 
+    /// Stops the timer and resets it to the initial state.
+    ///
+    /// Has no effect if the timer is not running.
     pub fn stop(&mut self) -> impl IntoIterator<Item = TimerEvent> {
         let mut events = Vec::with_capacity(2);
 
@@ -320,7 +310,7 @@ impl Timer {
             self.state = TimerState::Stopped;
             events.push(TimerEvent::Ended(self.cycle.clone()));
             events.push(TimerEvent::Stopped);
-            self.cycle = self.config.clone_first_cycle().unwrap();
+            self.cycle = self.config.first_cycle();
             self.cycles_count = self.config.cycles_count.clone();
             self.started_at = None;
             self.elapsed = 0;
@@ -330,20 +320,47 @@ impl Timer {
     }
 }
 
+/// A command sent to a timer server.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TimerRequest {
+    /// Return the current timer state without modifying it.
+    Get,
+    /// Start the timer.
+    Start,
+    /// Stop the timer.
+    Stop,
+    /// Pause the timer.
+    Pause,
+    /// Resume the timer.
+    Resume,
+    /// Advance the timer by one tick.
+    Update,
+    /// Set the remaining duration of the current cycle.
+    Set(usize),
+}
+
+/// A response from a timer server.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TimerResponse {
+    /// The current timer state (reply to [`TimerRequest::Get`]).
+    Timer(Timer),
+    /// Events emitted by the timer as a result of a command.
+    Events(Vec<TimerEvent>),
+}
+
 impl Eq for Timer {}
 
 impl PartialEq for Timer {
     fn eq(&self, other: &Self) -> bool {
-        self.state == other.state && self.cycle == other.cycle && self.elapsed() == other.elapsed()
+        self.state == other.state
+            && self.cycle == other.cycle
+            && self.started_at == other.started_at
+            && self.elapsed == other.elapsed
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use mock_instant::global::{Instant, MockClock};
-
     use super::*;
 
     fn testing_timer() -> Timer {
@@ -358,7 +375,7 @@ mod tests {
             },
             state: TimerState::Running,
             cycle: TimerCycle::new("a", 3),
-            started_at: Some(Instant::now()),
+            started_at: Some(0),
             ..Default::default()
         }
     }
@@ -370,40 +387,19 @@ mod tests {
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("a", 3));
 
-        // next ticks: state should still be running, cycle name
-        // should be the same and cycle duration should be decremented
-        // by 2
-
-        MockClock::advance(Duration::from_secs(2));
-        timer.update();
-
+        timer.update(2);
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("a", 1));
 
-        // next tick: state should still be running, cycle should
-        // switch to the next one
-
-        MockClock::advance(Duration::from_secs(1));
-        timer.update();
-
+        timer.update(3);
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("b", 2));
 
-        // next ticks: state should still be running, cycle should
-        // switch to the next one
-
-        MockClock::advance(Duration::from_secs(2));
-        timer.update();
-
+        timer.update(5);
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("c", 1));
 
-        // next tick: state should still be running, cycle should
-        // switch back to the first one
-
-        MockClock::advance(Duration::from_secs(1));
-        timer.update();
-
+        timer.update(6);
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("a", 3));
     }
@@ -413,15 +409,10 @@ mod tests {
         let mut timer = testing_timer();
         let mut events = Vec::new();
 
-        // from a3 to b1
-        MockClock::advance(Duration::from_secs(1));
-        events.extend(timer.update());
-        MockClock::advance(Duration::from_secs(1));
-        events.extend(timer.update());
-        MockClock::advance(Duration::from_secs(1));
-        events.extend(timer.update());
-        MockClock::advance(Duration::from_secs(1));
-        events.extend(timer.update());
+        events.extend(timer.update(1));
+        events.extend(timer.update(2));
+        events.extend(timer.update(3));
+        events.extend(timer.update(4));
 
         assert_eq!(
             events,
@@ -437,47 +428,51 @@ mod tests {
     }
 
     #[test]
-    fn paused_timer_not_impacted_by_iterator() {
+    fn paused_timer_not_impacted_by_update() {
         let mut timer = testing_timer();
         timer.state = TimerState::Paused;
         let prev_timer = timer.clone();
-        timer.update();
+        timer.update(10);
         assert_eq!(prev_timer, timer);
     }
 
     #[test]
-    fn stopped_timer_not_impacted_by_iterator() {
+    fn stopped_timer_not_impacted_by_update() {
         let mut timer = testing_timer();
         timer.state = TimerState::Stopped;
         let prev_timer = timer.clone();
-        timer.update();
+        timer.update(10);
         assert_eq!(prev_timer, timer);
     }
 
     #[test]
-    fn thread_safe_timer() {
-        let mut timer = Timer::default();
-        timer.config = testing_timer().config;
-        timer.cycle = timer.config.clone_first_cycle().unwrap();
-        timer.cycles_count = timer.config.cycles_count.clone();
+    fn timer_lifecycle() {
+        let mut timer = Timer::new(TimerConfig {
+            cycles: TimerCycles::from([
+                TimerCycle::new("a", 3),
+                TimerCycle::new("b", 2),
+                TimerCycle::new("c", 1),
+            ]),
+            ..Default::default()
+        });
 
         let mut events = Vec::new();
 
         assert_eq!(timer.state, TimerState::Stopped);
         assert_eq!(timer.cycle, TimerCycle::new("a", 3));
 
-        events.extend(timer.start());
+        events.extend(timer.start(0));
         events.extend(timer.set(21));
 
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("a", 21));
 
-        events.extend(timer.pause());
+        events.extend(timer.pause(0));
 
         assert_eq!(timer.state, TimerState::Paused);
         assert_eq!(timer.cycle, TimerCycle::new("a", 21));
 
-        events.extend(timer.resume());
+        events.extend(timer.resume(0));
 
         assert_eq!(timer.state, TimerState::Running);
         assert_eq!(timer.cycle, TimerCycle::new("a", 21));
